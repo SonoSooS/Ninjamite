@@ -5,8 +5,8 @@ Ninjamite is a ninjafile emitter helper which helps you to easily create build s
 # Usage
 
 You'll need the following:
-- [https://github.com/ninja-build/ninja](ninja) in your `PATH`
-- [https://sourceforge.net/projects/luabinaries/files/5.1.5/Tools%20Executables/](Lua 5.1.5) in your `PATH` aliased as `lua`
+- [ninja](https://github.com/ninja-build/ninja) in your `PATH`
+- [Lua 5.1.5](https://sourceforge.net/projects/luabinaries/files/5.1.5/Tools%20Executables/) in your `PATH` aliased as `lua`
 - the `tools/` directory in this repo in your `PATH`
 
 See `examples/example.lua` on a simple C compile example.
