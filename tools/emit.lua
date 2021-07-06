@@ -2,6 +2,43 @@ local pt = require "helper/path"
 local glob = require "helper/glob"
 local valueset = require "helper/valueset"
 
+---@alias Emitter table
+---@alias Target table<string, string>
+
+---@alias MapperFunc fun(dst: string, src: string): string , string
+---@alias MappingTable table<string, string>
+
+---@alias FilterFunc fun(folder: string, filename: string): boolean
+
+---@class MapTarget
+---@field __cmd string
+---@field __indeps table
+---@field __outs string[]
+---@field overrides table<string, string> | nil
+
+---@class BuildRule
+---@field rule string @ build rule
+---@field ins string[] @ input files
+---@field outs string[] @ output files
+---@field overrides table<string, string> | nil @ optional rule flag overrides
+
+---@class Depo
+---@field __flag string
+---@field build fun(): MapTarget | MapTarget[]
+---@field build_internal fun(): MapTarget | MapTarget[]
+
+---@class DepoArchive : Depo
+---@field addinput fun(...): DepoArchive
+
+---@class DepoMapper : Depo
+---@field addmap fun(in1: string | table, in2: string | table, in3: table | nil): DepoMapper
+
+---@class CommandTarget
+---@field __name string @ name of the target
+---@field command string @ command string
+
+
+--[[
 local function rp(tree, depth)
     if not depth then
         depth = 0
@@ -36,23 +73,69 @@ local function rpa(tree, prefix, cb)
         end
     end
 end
+]]--
 
+---@param pat string
+---@return string
+local function ninjasan(pat)
+    local ret = pat:gsub("([%$%:% ])", "$%1")
+    return ret
+end
+
+---@param pat string
+---@return string
+local function ninjasan_novarescape(pat)
+    local ret = pat:gsub("([%:% ])", "$%1")
+    return ret
+end
+
+---@param pat string
+---@return string
+local function patternsan(pat)
+    local ret = pat:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+    return ret
+end
+
+---@param pat string
+---@return string
+local function patternsan_sregex(pat)
+    local ret = pat:gsub("([%(%)%.%%%+%-%[%]%^%$])", "%%%1")
+    return ret
+end
+
+---@param val string[] | string
+---@param prefix string | nil
+---@return string
 local function val_expand(val, prefix)
     if type(val) == "table" then
-        if not prefix then
-            return table.concat(val, " ")
+        local ret = {}
+        
+        if prefix then
+            for _,v in ipairs(val) do
+                table.insert(ret, prefix .. ninjasan_novarescape(v))
+            end
+        else
+            for _,v in ipairs(val) do
+                table.insert(ret, ninjasan_novarescape(v))
+            end
         end
         
-        if #val == 0 then
-            return ""
-        end
-        
-        return prefix .. table.concat(val, " " .. prefix)
+        return table.concat(ret, " ")
+    end
+    
+    if prefix then
+        error("Can't prefix non-array values")
     end
     
     return val
 end
 
+---@param tbl table
+---@param a table | string
+---@param b string | nil
+---@overload fun(tbl: table, values: table<string, string>): table
+---@overload fun(tbl: table, key: string, value: string): table
+---@return table
 local function mergetable(tbl, a, b)
     if type(a) == "table" then
         for k,v in pairs(a) do
@@ -65,27 +148,22 @@ local function mergetable(tbl, a, b)
     return tbl
 end
 
-local function ninjasan(pat)
-    return pat:gsub("([%$%:% ])", "$%1")
-end
-
-local function ninjasan_novarescape(pat)
-    return pat:gsub("([%:% ])", "$%1")
-end
-
-local function patternsan(pat)
-    return pat:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
-end
-
-local function patternsan_sregex(pat)
-    return pat:gsub("([%(%)%.%%%+%-%[%]%^%$])", "%%%1")
-end
-
+---@generic TDepo : Depo
+---@param depotype string | '"arch"' | '"mapper"'
+---@param method string
+---@param overrides table | nil
+---@return TDepo
 local function newdepo(depotype, method, overrides)
-    local buildrule = method and (method.__targetname or method)
+    --TODO: support rule method instead of just string
+    
+    ---@type string
+    local buildrule = method
+    
     local objtype = depotype
+    ---@type table
     local globalopts = overrides or {}
     
+    ---@type Depo
     local depo = {}
     depo.__flag = "depo_" .. objtype
     
@@ -103,10 +181,12 @@ local function newdepo(depotype, method, overrides)
     
     if objtype == "arch" then
         
+        ---@type string
         local outname = nil
         
         local inputs = {}
         
+        ---@param filepath string
         function depo.output(filepath)
             if outname then
                 error("Do not call this function directly")
@@ -117,6 +197,8 @@ local function newdepo(depotype, method, overrides)
             depo.outfile = filepath
         end
         
+        ---@vararg Depo | MapTarget | string | Depo[] | MapTarget[] | string[]
+        ---@return DepoArchive
         function depo.addinput(...)
             if builded then
                 error("Trying to modify immutable depmapper")
@@ -140,23 +222,34 @@ local function newdepo(depotype, method, overrides)
                 error("Can't build incomplete depmapper")
             end
             
+            ---@type MapTarget
             local obj = { __cmd = buildrule, __outs = {outname}, __indeps = inputs, overrides = globalopts}
             
             return obj
         end
         
+        ---@type DepoArchive
         return depo
         
     elseif objtype == "mapper" then
         
+        ---@type MapTarget[]
         local mapping = {}
         
+        ---@param in1 MappingTable | string
+        ---@param in2 string | table<string, string> | nil
+        ---@param in3 table<string, string> | nil
+        ---@overload fun(dst: string, src: string, overrides: table<string, string> | nil) : DepoMapper
+        ---@overload fun(mapping: MappingTable, overrides: table<string, string> | nil) : DepoMapper
+        ---@return DepoMapper
         function depo.addmap(in1, in2, in3)
             if not in1 then
                 return depo
             end
             
+            ---@type MappingTable
             local inmap
+            ---@type table<string, string> | nil
             local overrides
             
             if type(in1) == "string" then
@@ -169,6 +262,7 @@ local function newdepo(depotype, method, overrides)
                 overrides = in2
             end
             
+            ---@type table<string, string>
             local tmpcopy = {}
             
             for k,v in pairs(globalopts) do
@@ -186,6 +280,7 @@ local function newdepo(depotype, method, overrides)
             end
             
             for k,v in pairs(inmap) do
+                ---@type MapTarget
                 local obj = { __cmd = buildrule, __outs = {k}, __indeps = {v}, overrides = tmpcopy }
                 
                 mapping[k] = obj
@@ -195,6 +290,7 @@ local function newdepo(depotype, method, overrides)
         end
         
         function depo.build_internal()
+            ---@type MapTarget[]
             local res = {}
             
             for _,v in pairs(mapping) do
@@ -204,18 +300,23 @@ local function newdepo(depotype, method, overrides)
             return res
         end
         
+        ---@type DepoMapper
         return depo
     end
     
     error("Invalid depmapper type '" .. objtype .. "'")
 end
 
-
 local mappingtools = {}
 
+---@param data MappingTable
+---@param mapper MapperFunc
+---@return MappingTable
 function mappingtools.remap(data, mapper)
+    ---@type MappingTable
     local ret = {}
     
+    ---@type string
     for k,v in pairs(data) do
         
         k,v = mapper(k,v)
@@ -227,10 +328,15 @@ function mappingtools.remap(data, mapper)
     return ret
 end
 
+---@param k string
+---@param v string
+---@return string, string
 function mappingtools.dstprefixbuild(k, v)
     return "${builddir}/" .. k, v
 end
 
+---@vararg MapperFunc
+---@return MapperFunc
 function mappingtools.combine(...)
     local mappers = {}
     
@@ -252,15 +358,25 @@ function mappingtools.combine(...)
     end
 end
 
+---@param k string
+---@param v string
+---@return string, string
 function mappingtools.srctodstmap(k, v)
     return v, v
 end
 
+---@param k string
+---@param v string
+---@return string, string
 function mappingtools.dsttosrcmap(k, v)
     return k, k
 end
 
+---@param files MappingTable
+---@param mapper MapperFunc
+---@return MappingTable
 function mappingtools.dstremap(files, mapper)
+    ---@type MappingTable
     local res = {}
     
     for k,v in pairs(files) do
@@ -273,7 +389,11 @@ function mappingtools.dstremap(files, mapper)
     return res
 end
 
+---@param files MappingTable
+---@param mapper MapperFunc
+---@return MappingTable
 function mappingtools.srcremap(files, mapper)
+    ---@type MappingTable
     local res = {}
     
     for k,v in pairs(files) do
@@ -286,6 +406,9 @@ function mappingtools.srcremap(files, mapper)
     return res
 end
 
+---@param oldext string
+---@param newext string
+---@return MapperFunc
 function mappingtools.dstchext(oldext, newext)
     local oldextlen = #oldext
     
@@ -305,14 +428,19 @@ function mappingtools.dstchext(oldext, newext)
     end
 end
 
-
+---@type Emitter
 local api = {}
 
+--- Creates a new emitter
+---@param rootarg string @ source root
+---@param isempty boolean | nil @ if true, the emitter is created without any targets
+---@return Emitter
 function api.new(rootarg, isempty)
     if not rootarg then
         error("Parameter #1 must be the source root path")
     end
     
+    ---@type table<string, string>
     local config =
     {
         srcroot = pt.abssan(rootarg),
@@ -321,12 +449,17 @@ function api.new(rootarg, isempty)
         outdir = "out"
     }
     
+    ---@type table<string, CommandTarget>
     local targets = {}
+    ---@type table<string, string>
     local pubtargets = {}
     
+    ---@type Depo[]
     local outputs = {}
+    ---@type table<string, string>
     local envvars = {}
     
+    ---@type table<string, string>
     local compilerflags =
     {
         CPREFIX = "",
@@ -340,6 +473,7 @@ function api.new(rootarg, isempty)
         STRIP = "${CPREFIX}strip"
     }
     
+    ---@type table<string, string>
     local buildflags =
     {
         ARCH = "",
@@ -350,6 +484,7 @@ function api.new(rootarg, isempty)
         ASFLAGS = ""
     }
     
+    ---@type table<string, string[] | string>
     local specialflags =
     {
         LIBS = {},
@@ -357,12 +492,14 @@ function api.new(rootarg, isempty)
         INCLUDES = {}
     }
     
-    
+    ---@type Emitter
     local emit = {}
     
     emit.map = mappingtools
     emit.targets = pubtargets
     
+    --- Resets the emitter to empty
+    ---@return Emitter
     function emit.reset()
         config = {}
         
@@ -375,23 +512,38 @@ function api.new(rootarg, isempty)
         compilerflags = {}
         buildflags = {}
         specialflags = {}
+        
+        return emit
     end
     
-    
+    ---@param fndst string
+    ---@param fnsrc string
+    ---@return string, string
     function emit.srcappendmap(fndst, fnsrc)
         return fndst, pt.combine(config.srcroot, fnsrc)
     end
     
+    ---@param fndst string
+    ---@param fnsrc string
+    ---@return string, string
     function emit.dstappendmap(fndst, fnsrc)
         return pt.combine(config.srcroot, fndst), fnsrc
     end
     
+    --- Adds a top-level target to the build tree
+    ---@param target Depo
+    ---@return Emitter
     function emit.add(target)
         table.insert(outputs, target)
         return target
     end
     
+    --- Creates a new top-level build target
+    ---@param name string @ output file path
+    ---@param method string | Target @ target used to make this output
+    ---@return DepoArchive
     function emit.newtarget(name, method, ...)
+        ---@type DepoArchive
         local target = newdepo("arch", method)
         
         target.output(name)
@@ -401,6 +553,10 @@ function api.new(rootarg, isempty)
         return target
     end
     
+    --- Creates a new output mappercomment
+    ---@param method string | Target @ target used to build the mapped files
+    ---@vararg MappingTable @ optional input to already add as target
+    ---@return DepoMapper
     function emit.newmapper(method, ...)
         local target = newdepo("mapper", method)
         
@@ -410,32 +566,45 @@ function api.new(rootarg, isempty)
         return target
     end
     
+    ---@return Emitter
     function emit.env(cfg, val)
         mergetable(envvars, cfg, val)
         return emit
      end
     
+     ---@return Emitter
     function emit.config(cfg, val)
        mergetable(config, cfg, val)
        return emit
     end
     
+    ---@return Emitter
     function emit.compiler(cfg, val)
         mergetable(compilerflags, cfg, val)
         return emit
     end
     
+    ---@return Emitter
     function emit.cflags(cfg, val)
         mergetable(buildflags, cfg, val)
         return emit
     end
     
+    ---@return Emitter
     function emit.special(cfg, val)
         mergetable(specialflags, cfg, val)
         return emit
     end
     
+    --- Adds a new action to transform the inputs into outputs
+    ---@param name string @ name of action
+    ---@param cmd string | table<string, string> @ command descriptor
+    ---@param extras table<string, string> | nil @ extra flags
+    ---@overload fun(name: string, cmd: string, extras: table<string, string> | nil)
+    ---@overload fun(name: string, data: table<string, string>)
+    ---@return CommandTarget
     function emit.addtarget(name, cmd, extras)
+        ---@type CommandTarget
         local target = {}
         
         if type(extras) == "table" then
@@ -465,6 +634,7 @@ function api.new(rootarg, isempty)
         return target
     end
     
+    --[[
     function emit.filelist(...)
         local params = {...}
         
@@ -483,19 +653,39 @@ function api.new(rootarg, isempty)
                 end
             end
         end
+        
+        return res
     end
+    ]]--
     
+    --- Creates an unfinished file mapping target
+    ---@param pattern string @ path or pattern
+    ---@param filter FilterFunc | string | boolean | nil @ pattern or filter function, or nil for no filtering
+    ---@param remap MapperFunc | nil @ input-output remapper
+    ---@return MappingTable
     function emit.infile(pattern, filter, remap)
+        local rootpath = "."
+        
         if type(filter) == "string" then
+            rootpath = pt.abssan(pattern)
             pattern = pt.join(pattern, filter)
             filter = nil
-        elseif type(filter) ~= "function" and filter ~= true and filter ~= false and filter ~= nil then
-            error("Filter is not string, function, true, false, or nil")
+        elseif type(filter) ~= "function" and filter ~= nil then
+            error("Filter is not string, function, or nil")
+        else
+            --rootpath = pt.abssan(pattern)
+            --TODO: handle this better?
+            local rootpath = "."
         end
         
-        if filter == nil and pattern:find("[*?#]") then
+        if not pt.isabs(rootpath) then -- confine relative path to src root
+            rootpath = pt.absjoin(config.srcroot, rootpath)
+        end
+        
+        if filter == nil and pattern:find("[*?#]") then -- default filtering is path matching
             local newpattern = patternsan_sregex(pt.san(pattern))
             
+            ---@type string
             newpattern = newpattern
                 :gsub("%*%*+", ".+")
                 :gsub("%*$", "[^/]*$")
@@ -519,6 +709,7 @@ function api.new(rootarg, isempty)
             filter = true
         end
         
+        ---@type MappingTable
         local results = {}
         
         if filter == true then
@@ -528,7 +719,7 @@ function api.new(rootarg, isempty)
                 local fullpath = pt.combine(fd, fn)
                 
                 if fullpath:match(filtpattern) then
-                    results[fullpath] = fullpath
+                    results[fullpath] = pt.combine(rootpath, fullpath)
                 end
                 
                 return false
@@ -538,13 +729,13 @@ function api.new(rootarg, isempty)
         if not filter then
             filter = function(fd, fn)
                 local fullpath = pt.combine(fd, fn)
-                results[fullpath] = fullpath
+                results[fullpath] = pt.combine(rootpath, fullpath)
                 
                 return false
             end
         end
         
-        glob.glob(config.srcroot, filter)
+        glob.glob(rootpath, filter)
         
         if remap then
             if type(remap) ~= "function" then
@@ -557,6 +748,14 @@ function api.new(rootarg, isempty)
         return results
     end
     
+    --- Creates a new file mapper from a flattened file listing
+    ---@param files MappingTable @ file map
+    ---@param target string @ target name
+    ---@param extra table<string, string> | nil @ extra settings to this target of files
+    ---@param mapper MapperFunc | nil @ optional remapper
+    ---@overload fun(files: MappingTable, target: string, mapper: MapperFunc | nil): DepoMapper
+    ---@overload fun(files: MappingTable, target: string, extra: table<string, string>, mapper: MapperFunc | nil): DepoMapper
+    ---@return DepoMapper
     function emit.newfilemap(files, target, extra, mapper)
         if type(extra) == "function" then
             mapper = extra
@@ -572,12 +771,23 @@ function api.new(rootarg, isempty)
         return depmap
     end
     
+    --- Creates a file mapping by discovering files from the fileystem and remapping them
+    ---@param target string @ target name
+    ---@param pattern string
+    ---@param filter FilterFunc | string | nil
+    ---@param extra table<string, string> | nil
+    ---@param mapper MapperFunc | nil
+    ---@return MappingTable
     function emit.newinfilemap(target, pattern, filter, extra, mapper)
         local files = emit.infile(pattern, filter, mapper)
         
         return emit.newfilemap(files, target, extra)
     end
     
+    ---@param deps ValueSet @ dependency cache
+    ---@param outmap BuildRule[] @ output rules
+    ---@param input any @ string | Depo | MapTarget
+    ---@return ValueSet outfiles
     local function flatten_map(deps, outmap, input, depth)
         local outs = valueset.new()
         
@@ -598,9 +808,12 @@ function api.new(rootarg, isempty)
         end
         
         if input.__flag then
-            print(debugprefix .. "- mapper " .. input.__flag)
+            ---@type Depo
+            local indepo = input
             
-            local results = input.build()
+            print(debugprefix .. "- mapper " .. indepo.__flag)
+            
+            local results = indepo.build()
             
             if not results.__outs then
                 for _,v in ipairs(results) do
@@ -622,21 +835,26 @@ function api.new(rootarg, isempty)
         end
         
         if input.__outs then
+            ---@type MapTarget
+            local intarget = input
+            
             local debugouts = {}
             
-            for _,v in ipairs(input.__outs) do
+            for _,v in ipairs(intarget.__outs) do
                 table.insert(debugouts, v)
             end
             
-            print(debugprefix .. "- raw cmd = " .. input.__cmd .. " | outs = " .. table.concat(debugouts, ", "))
+            print(debugprefix .. "- endpoint cmd = " .. intarget.__cmd .. " | outs = " .. table.concat(debugouts, ", "))
             
             local ins = valueset.new()
             
+            ---@type string[]
             local instr = {}
+            ---@type string[]
             local outstr = {}
             
-            if input.__indeps then
-                for _,v in ipairs(input.__indeps) do
+            if intarget.__indeps then
+                for _,v in ipairs(intarget.__indeps) do
                    local infiles = flatten_map(deps, outmap, v, depth) 
                    for k,w in -infiles do
                        ins[k] = w
@@ -648,18 +866,19 @@ function api.new(rootarg, isempty)
                 end
             end
             
-            for _,v in ipairs(input.__outs) do
+            for _,v in ipairs(intarget.__outs) do
                 outs[v] = instr
                 deps[v] = instr
                 table.insert(outstr, v)
             end
             
+            ---@type BuildRule
             local outobj =
             {
-                rule = input.__cmd,
+                rule = intarget.__cmd,
                 ins = instr,
                 outs = outstr,
-                overrides = input.overrides
+                overrides = intarget.overrides
             }
             
             table.insert(outmap, outobj)
@@ -667,7 +886,7 @@ function api.new(rootarg, isempty)
             return outs
         end
         
-        print(debugprefix .. "- array")
+        print(debugprefix .. "- sublist")
         
         for _,v in ipairs(input) do
             local outmap = flatten_map(deps, outmap, v, depth)
@@ -679,22 +898,51 @@ function api.new(rootarg, isempty)
         return outs
     end
     
+    ---@param intarget Depo | nil
+    ---@return BuildRule[], string[]
     local function build_map(intarget)
+        ---@type BuildRule[]
         local outmap = {}
+        ---@type string[]
         local rootfiles = {}
         
         local depset = valueset.new()
         
+        ---@type ValueSet[]
+        local debugouts = {}
+        
         if intarget then
-            flatten_map(depset, outmap, intarget)
+            local debugout = flatten_map(depset, outmap, intarget)
+            table.insert(debugouts, debugout)
+            
+            --[[
             if intarget.outfile then
                 table.insert(rootfiles, intarget.outfile)
             end
+            ]]--
         else
             for _,v in pairs(outputs) do
-                flatten_map(depset, outmap, v)
+                local debugout = flatten_map(depset, outmap, v)
+                table.insert(debugouts, debugout)
+                
+                --[[
                 if v.outfile then
                     table.insert(rootfiles, v.outfile)
+                end
+                ]]--
+            end
+        end
+        
+        print("Top-level outputs")
+        
+        for k,v in ipairs(debugouts) do
+            print("[" .. k .. "]")
+            for u,w in -v do
+                table.insert(rootfiles, u) --TODO: use set instead of table
+                
+                print("- ", u, w)
+                for j,z in pairs(w) do
+                    print("  -", j, z)
                 end
             end
         end
@@ -789,7 +1037,9 @@ build clean: phony clean_
         f:write("\n")
         
         for _,v in ipairs(map) do
+            ---@type string[]
             local ins = {}
+            ---@type string[]
             local outs = {}
             
             for _,w in ipairs(v.outs) do
@@ -817,6 +1067,7 @@ build clean: phony clean_
         
         f:write("\n")
         
+        ---@type string[]
         local rootfiles_all = {}
         
         for _,w in ipairs(rootfiles) do

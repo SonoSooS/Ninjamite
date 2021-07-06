@@ -1,11 +1,21 @@
 local vs = {}
 
+---@class ValueSet
+
+--- Creates a new value set (key is unique)
+---@return ValueSet set
 function vs.new()
+    --- Dummy object
+    ---@type ValueSet
     local obj = {}
+    --- Metatable for valuesets
     local mt = {}
     
+    ---@type table<string, any>
     local backer = {}
+    ---@type string[]
     local order = {}
+    ---@type table<string, number>
     local indexes = {}
     
     function mt.__index(this, index)
@@ -24,6 +34,8 @@ function vs.new()
         indexes[index] = newindex
     end
     
+    --- Iterates over the value set in key insertion order
+    ---@return fun(): string,any | nil
     function mt.__unm(this)
         local i = 1
         

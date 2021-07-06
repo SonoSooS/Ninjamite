@@ -31,8 +31,7 @@ emit.add(
         .addinput(
             emit.newinfilemap(emit.targets.CL, "**.c", nil, nil, emit.map.combine(
                 emit.map.dstchext(".c", ".o"),
-                emit.map.dstprefixbuild,
-                emit.srcappendmap
+                emit.map.dstprefixbuild
             ))
         )
 )
@@ -41,8 +40,7 @@ emit.add(
 local cfiles = emit.infile("**c")
 local ofiles = emit.newfilemap(cfiles, emit.targets.CL, emit.map.combine(
     emit.map.dstchext(".c", ".o"),
-    emit.map.dstprefixbuild,
-    emit.srcappendmap
+    emit.map.dstprefixbuild
 ))
 
 local elf = emit.newtarget(
