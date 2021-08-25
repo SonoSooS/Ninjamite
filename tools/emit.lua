@@ -156,6 +156,8 @@ end
 local function newdepo(depotype, method, overrides)
     --TODO: support rule method instead of just string
     
+    if not method then error("null method") end
+    
     ---@type string
     local buildrule = method
     
@@ -193,8 +195,6 @@ local function newdepo(depotype, method, overrides)
             end
             
             outname = filepath
-            
-            depo.outfile = filepath
         end
         
         ---@vararg Depo | MapTarget | string | Depo[] | MapTarget[] | string[]
@@ -501,7 +501,7 @@ function api.new(rootarg, isempty)
     --- Resets the emitter to empty
     ---@return Emitter
     function emit.reset()
-        config = {}
+        --config = {}
         
         targets = {}
         pubtargets = {}
@@ -512,6 +512,8 @@ function api.new(rootarg, isempty)
         compilerflags = {}
         buildflags = {}
         specialflags = {}
+        
+        emit.targets = pubtargets
         
         return emit
     end
@@ -665,8 +667,11 @@ function api.new(rootarg, isempty)
     ---@return MappingTable
     function emit.infile(pattern, filter, remap)
         local rootpath = "."
+        local nopatsan = false
         
         if type(filter) == "string" then
+            nopatsan = pattern:sub(1, 2) == "./" or pattern:sub(1, 3) == "../"
+            
             rootpath = pt.abssan(pattern)
             pattern = pt.join(pattern, filter)
             filter = nil
@@ -675,10 +680,10 @@ function api.new(rootarg, isempty)
         else
             --rootpath = pt.abssan(pattern)
             --TODO: handle this better?
-            local rootpath = "."
+            rootpath = "."
         end
         
-        if not pt.isabs(rootpath) then -- confine relative path to src root
+        if not nopatsan and not pt.isabs(rootpath) then -- confine relative path to src root
             rootpath = pt.absjoin(config.srcroot, rootpath)
         end
         
@@ -746,6 +751,18 @@ function api.new(rootarg, isempty)
         end
         
         return results
+    end
+    
+    function emit.filemapcombine(...)
+        local result = {}
+        
+        for _,v in ipairs({...}) do
+            for k,w in pairs(v) do
+                result[k] = w
+            end
+        end
+        
+        return result
     end
     
     --- Creates a new file mapper from a flattened file listing
@@ -909,33 +926,21 @@ function api.new(rootarg, isempty)
         local depset = valueset.new()
         
         ---@type ValueSet[]
-        local debugouts = {}
+        local outfilenames = {}
         
         if intarget then
-            local debugout = flatten_map(depset, outmap, intarget)
-            table.insert(debugouts, debugout)
-            
-            --[[
-            if intarget.outfile then
-                table.insert(rootfiles, intarget.outfile)
-            end
-            ]]--
+            local outset = flatten_map(depset, outmap, intarget)
+            table.insert(outfilenames, outset)
         else
             for _,v in pairs(outputs) do
-                local debugout = flatten_map(depset, outmap, v)
-                table.insert(debugouts, debugout)
-                
-                --[[
-                if v.outfile then
-                    table.insert(rootfiles, v.outfile)
-                end
-                ]]--
+                local outset = flatten_map(depset, outmap, v)
+                table.insert(outfilenames, outset)
             end
         end
         
         print("Top-level outputs")
         
-        for k,v in ipairs(debugouts) do
+        for k,v in ipairs(outfilenames) do
             print("[" .. k .. "]")
             for u,w in -v do
                 table.insert(rootfiles, u) --TODO: use set instead of table
