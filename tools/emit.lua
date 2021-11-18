@@ -148,6 +148,46 @@ local function mergetable(tbl, a, b)
     return tbl
 end
 
+local function debug_print(obj, in_kv, depth)
+    local out_text = ""
+    
+    if not depth then
+        depth = 0
+    end
+    
+    local debugprefix = ("    "):rep(depth)
+    local debugprefix1 = ("    "):rep(depth + 1)
+    
+    if type(obj) == "table" then
+        if obj.__flag then
+            out_text = out_text .. obj.__flag .. ":\r\n" .. debugprefix .. "{\r\n"
+            obj = obj.build()
+        else
+            out_text = out_text .. "{\r\n"
+        end
+        
+        for k,v in pairs(obj) do
+            out_text = out_text .. debugprefix1 .. "[" .. k .. "]: "
+            if type(v) == "table" and not v.__flag then
+                out_text = out_text .. "\r\n" .. debugprefix1
+            end
+            out_text = out_text .. debug_print(v, k, depth + 1) .. "\r\n"
+        end
+        
+        out_text = out_text .. debugprefix .. "}"
+    elseif type(obj) == "string" then
+        out_text = out_text .. "'" .. obj .. "'"
+    else
+        out_text = out_text .. "(" .. type(obj) .. ") " .. tostring(obj)
+    end
+    
+    if depth == 0 then
+        print(out_text)
+    end
+    
+    return out_text
+end
+
 ---@generic TDepo : Depo
 ---@param depotype string | '"arch"' | '"mapper"'
 ---@param method string
@@ -279,14 +319,44 @@ local function newdepo(depotype, method, overrides)
                 tmpcopy = nil
             end
             
-            for k,v in pairs(inmap) do
-                ---@type MapTarget
-                local obj = { __cmd = buildrule, __outs = {k}, __indeps = {v}, overrides = tmpcopy }
+            if inmap.__flag and type(inmap.build) == "function" then
+                --debug_print(inmap)
                 
-                mapping[k] = obj
+                mapping = inmap.build()
+            else
+                for k,v in pairs(inmap) do
+                    ---@type MapTarget
+                    local obj = { __cmd = buildrule, __outs = {k}, __indeps = {v}, overrides = tmpcopy }
+                    
+                    mapping[k] = obj
+                end
             end
             
             return depo
+        end
+        
+        function depo.remap(mapper)
+            local mappedfiles = {}
+            
+            --print("?? " .. buildrule)
+            
+            for mk, mv in pairs(mapping) do
+                --print("== " .. mk)
+                --print("=? " .. tostring(mv))
+                --print(" ? " .. tostring(mv.__flag))
+                
+                --debug_print(mv)
+                
+                if not mv.__outs then
+                    error("WTF, not a rule???")
+                end
+                
+                local new_name = mapper(mv.__outs[1])
+                
+                mappedfiles[new_name] = mv
+            end
+            
+            return mappedfiles
         end
         
         function depo.build_internal()
@@ -495,6 +565,7 @@ function api.new(rootarg, isempty)
     ---@type Emitter
     local emit = {}
     
+    emit.debug_print = debug_print
     emit.map = mappingtools
     emit.targets = pubtargets
     
@@ -561,6 +632,34 @@ function api.new(rootarg, isempty)
     ---@return DepoMapper
     function emit.newmapper(method, ...)
         local target = newdepo("mapper", method)
+        
+        target.addmap(...)
+        
+        --return emit.add(target)
+        return target
+    end
+    
+    --- Creates a new top-level build target
+    ---@param name string @ output file path
+    ---@param method string | Target @ target used to make this output
+    ---@return DepoArchive
+    function emit.newtargeto(name, method, overrides, ...)
+        ---@type DepoArchive
+        local target = newdepo("arch", method, overrides)
+        
+        target.output(name)
+        target.addinput(...)
+        
+        --return emit.add(target)
+        return target
+    end
+    
+    --- Creates a new output mappercomment
+    ---@param method string | Target @ target used to build the mapped files
+    ---@vararg MappingTable @ optional input to already add as target
+    ---@return DepoMapper
+    function emit.newmappero(method, overrides, ...)
+        local target = newdepo("mapper", method, overrides)
         
         target.addmap(...)
         
@@ -757,7 +856,16 @@ function api.new(rootarg, isempty)
         local result = {}
         
         for _,v in ipairs({...}) do
+            if type(v) == "table" and type(v.__flag) == "string" and type(v.build) == "function" then
+                --print(_, v.__flag)
+                --debug_print(v)
+                v = v.remap(function(k,v)return k,v end)
+                --debug_print(v)
+            end
+            
+            --print(_)
             for k,w in pairs(v) do
+                --print(k, w)
                 result[k] = w
             end
         end
@@ -780,7 +888,11 @@ function api.new(rootarg, isempty)
         end
         
         if mapper then
-            files = mappingtools.remap(files, mapper)
+            if files.__flag and type(files.build) == "function" then
+                files = files.remap(mapper)
+            else
+                files = mappingtools.remap(files, mapper)
+            end
         end
         
         local depmap = emit.newmapper(target, files, extra)
