@@ -402,7 +402,11 @@ end
 ---@param v string
 ---@return string, string
 function mappingtools.dstprefixbuild(k, v)
-    return "${builddir}/" .. k, v
+    if k:sub(1, 12) ~= "${builddir}/" then
+        return "${builddir}/" .. k, v
+    else
+        return k, v
+    end
 end
 
 ---@vararg MapperFunc
@@ -759,6 +763,44 @@ function api.new(rootarg, isempty)
     end
     ]]--
     
+    local function compare_table(l, r)
+        for k,v in pairs(r) do
+            if v ~= nil and type(l[k]) == "nil" then
+                return false
+            end
+            
+            if type(v) == "table" and type(l[k]) == "table" then
+                if not compare_table(v, l[k]) then
+                    return false
+                end
+            else
+                if v ~= l[k] then
+                    return false
+                end
+            end
+        end
+        
+        return true
+    end
+    
+    local function insert_unique(tbl, val)
+        if type(val) == "table" then
+            for k,v in ipairs(tbl) do
+                if type(v) == "table" and compare_table(val, v) then
+                    return
+                end
+            end
+        else
+            for k,v in ipairs(tbl) do
+                if v == val then
+                   return 
+                end
+            end
+        end
+        
+        table.insert(tbl, val)
+    end
+    
     --- Creates an unfinished file mapping target
     ---@param pattern string @ path or pattern
     ---@param filter FilterFunc | string | boolean | nil @ pattern or filter function, or nil for no filtering
@@ -1010,7 +1052,8 @@ function api.new(rootarg, isempty)
                 overrides = intarget.overrides
             }
             
-            table.insert(outmap, outobj)
+            insert_unique(outmap, outobj)
+            --table.insert(outmap, outobj)
             
             return outs
         end
