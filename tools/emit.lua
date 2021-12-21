@@ -1223,6 +1223,23 @@ build clean: phony clean_
                 table.concat(ins, " "),
                 "\n"
             )
+            
+            if type(v.overrides) == "table" then
+                for k,v in pairs(v.overrides) do
+                    local lol = v
+                    if type(lol) == "table" then
+                        lol = table.concat(lol, " ") -- Does this need ninjasan?
+                    end
+                    
+                    f:write(
+                        "    ",
+                        k,
+                        "=",
+                        lol,
+                        "\n"
+                    )
+                end
+            end
         end
         
         f:write("\n")
