@@ -1112,6 +1112,8 @@ function api.new(rootarg, isempty)
     
     function emit.emit()
         
+        
+        
         local map, rootfiles = build_map()
         
         if #map == 0 then
@@ -1220,25 +1222,84 @@ build clean: phony clean_
                 " : ",
                 v.rule,
                 " ",
-                table.concat(ins, " "),
-                "\n"
+                table.concat(ins, " ")
             )
             
             if type(v.overrides) == "table" then
+                local override_kv = {}
+                local dep_k = {}
+                
                 for k,v in pairs(v.overrides) do
                     local lol = v
                     if type(lol) == "table" then
-                        lol = table.concat(lol, " ") -- Does this need ninjasan?
+                        if k == "__ninjamite_dep__" then
+                            for k,v in ipairs(v) do
+                                if type(v) == "table" then
+                                    if not v.__flag or not v.build then
+                                        error("Not a depo detected as dependency")
+                                    end
+                                    
+                                    local b = v.build()
+                                    
+                                    if b.__cmd and b.__outs then
+                                        b = {b}
+                                    end
+                                    
+                                    for vk, vv in ipairs(b) do
+                                        for ok, ov in ipairs(vv.__outs) do
+                                            if type(ov) ~= "string" then
+                                                debug_print(ov)
+                                                error("Output not a string")
+                                            end
+                                            
+                                            dep_k[ov] = true
+                                        end
+                                    end
+                                else
+                                    dep_k[k] = true
+                                end
+                            end
+                            
+                            lol = nil
+                        else
+                            --print("Table override on key " .. k)
+                            debug_print(lol)
+                            error("Table override on key " .. k)
+                            lol = table.concat(lol, " ") -- Does this need ninjasan?
+                        end
                     end
                     
+                    if lol ~= nil then
+                        table.insert(override_kv, table.concat({k,"=",lol}, ""))
+                    end
+                end
+                
+                local hasdeps = false
+                
+                for _,_ in pairs(dep_k) do
+                    hasdeps = true
+                    break
+                end
+                
+                if hasdeps then
+                    f:write(" |")
+                    
+                    for k,v in pairs(dep_k) do
+                        f:write(" ", k)
+                    end
+                end
+                
+                f:write("\n")
+                
+                for k,v in ipairs(override_kv) do
                     f:write(
                         "    ",
-                        k,
-                        "=",
-                        lol,
+                        v,
                         "\n"
-                    )
+                    ) 
                 end
+            else
+                f:write("\n")
             end
         end
         
